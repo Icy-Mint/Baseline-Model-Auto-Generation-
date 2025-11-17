@@ -129,9 +129,17 @@ class RuleParser:
                 field = prop_name
                 break
         
-        # Find the operator
+        # Find the operator (check in specific order - longer patterns first)
         operator = ComparisonOperator.EQUALS
-        for pattern, op in self.OPERATOR_PATTERNS.items():
+        operator_patterns_ordered = [
+            (r'\bgreater than or equal\b|\b>=\b|\bat least\b', ComparisonOperator.GREATER_THAN_OR_EQUAL),
+            (r'\bless than or equal\b|\b<=\b|\bat most\b', ComparisonOperator.LESS_THAN_OR_EQUAL),
+            (r'\bnot equal(s)?\b|\bis not\b|\b!=\b', ComparisonOperator.NOT_EQUALS),
+            (r'\bgreater than\b|\b>\b|\bmore than\b|\bexceeds\b', ComparisonOperator.GREATER_THAN),
+            (r'\bless than\b|\b<\b|\bbelow\b', ComparisonOperator.LESS_THAN),
+            (r'\bequals?\b|\bis\b|\b=\b', ComparisonOperator.EQUALS),
+        ]
+        for pattern, op in operator_patterns_ordered:
             if re.search(pattern, text_lower, re.IGNORECASE):
                 operator = op
                 break
@@ -157,12 +165,12 @@ class RuleParser:
                     value = 'retail'
                 elif 'residential' in text_lower:
                     value = 'residential'
-                elif re.search(r'zone\s+(\d+[a-z]?)', text_lower):
-                    zone_match = re.search(r'zone\s+(\d+[a-z]?)', text_lower)
-                    if zone_match:
-                        value = zone_match.group(1)
+                # Check for climate zone patterns (more flexible)
+                climate_match = re.search(r'(?:zone\s+|is\s+)(\d+[a-z]?)', text_lower)
+                if climate_match:
+                    value = climate_match.group(1)
         
-        # Extract unit
+        # Extract unit (check after value to avoid consuming numbers)
         unit = None
         for pattern, unit_name in self.UNIT_PATTERNS.items():
             if re.search(pattern, text_lower, re.IGNORECASE):
