@@ -53,7 +53,7 @@ def compute_metrics(eval_pred):
 def prepare_dataset(jsonl_path: str, tokenizer, max_input_length: int = 512, max_target_length: int = 512):
     """
     Prepare the dataset for training.
-    
+
     Args:
         jsonl_path: Path to JSONL dataset
         tokenizer: Tokenizer instance
@@ -62,42 +62,49 @@ def prepare_dataset(jsonl_path: str, tokenizer, max_input_length: int = 512, max
     """
     # Load data
     data = load_jsonl_dataset(jsonl_path)
-    
+
     # Prepare inputs and targets
     inputs = [item["input_text"] for item in data]
     targets = [item["target_json"] for item in data]
-    
-    # Tokenize
-    model_inputs = tokenizer(
-        inputs,
-        max_length=max_input_length,
-        padding=True,
-        truncation=True,
-        return_tensors="pt"
-    )
-    
-    # Tokenize targets
-    with tokenizer.as_target_tokenizer():
-        labels = tokenizer(
-            targets,
-            max_length=max_target_length,
-            padding=True,
-            truncation=True,
-            return_tensors="pt"
-        )
-    
-    model_inputs["labels"] = labels["input_ids"]
-    
-    # Convert to HuggingFace Dataset
+
+    # Create dataset from raw data
     dataset_dict = {
-        "input_ids": model_inputs["input_ids"].tolist(),
-        "attention_mask": model_inputs["attention_mask"].tolist(),
-        "labels": model_inputs["labels"].tolist()
+        "input_text": inputs,
+        "target_json": targets
     }
-    
+
     dataset = Dataset.from_dict(dataset_dict)
-    
-    return dataset
+
+    # Define tokenization function
+    def tokenize_function(examples):
+        # Tokenize inputs
+        model_inputs = tokenizer(
+            examples["input_text"],
+            max_length=max_input_length,
+            truncation=True,
+            padding=False  # Dynamic padding will be done by DataCollator
+        )
+
+        # Tokenize targets (labels)
+        labels = tokenizer(
+            text_target=examples["target_json"],
+            max_length=max_target_length,
+            truncation=True,
+            padding=False  # Dynamic padding will be done by DataCollator
+        )
+
+        model_inputs["labels"] = labels["input_ids"]
+
+        return model_inputs
+
+    # Apply tokenization
+    tokenized_dataset = dataset.map(
+        tokenize_function,
+        batched=True,
+        remove_columns=dataset.column_names
+    )
+
+    return tokenized_dataset
 
 
 def train_model(
@@ -162,6 +169,12 @@ def train_model(
         padding=True
     )
     
+    # Calculate reasonable eval/save steps
+    # For a dataset with ~2500 examples and batch_size=8, we have ~310 steps per epoch
+    # Evaluating 2-3 times per epoch is reasonable
+    steps_per_epoch = len(train_dataset) // batch_size
+    eval_save_steps = max(50, steps_per_epoch // 3)  # Eval 3 times per epoch, minimum 50 steps
+
     # Training arguments
     training_args = Seq2SeqTrainingArguments(
         output_dir=output_dir,
@@ -171,16 +184,18 @@ def train_model(
         num_train_epochs=num_epochs,
         weight_decay=weight_decay,
         logging_dir=f"{output_dir}/logs",
-        logging_steps=100,
-        save_steps=500,
-        eval_steps=500 if eval_dataset else None,
+        logging_steps=50,
+        save_steps=eval_save_steps,
+        eval_steps=eval_save_steps if eval_dataset else None,
         evaluation_strategy="steps" if eval_dataset else "no",
         save_total_limit=3,
         load_best_model_at_end=True if eval_dataset else False,
         metric_for_best_model="loss" if eval_dataset else None,
         greater_is_better=False,
         push_to_hub=False,
-        report_to="none"
+        report_to="none",
+        predict_with_generate=False,  # Set to True if you want to see generated text during eval
+        fp16=torch.cuda.is_available(),  # Enable mixed precision training on GPU
     )
     
     # Trainer
